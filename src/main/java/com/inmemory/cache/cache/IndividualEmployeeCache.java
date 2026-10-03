@@ -3,7 +3,8 @@ package com.inmemory.cache.cache;
 import com.inmemory.cache.dto.CacheDto;
 import com.inmemory.cache.model.Employee;
 import com.inmemory.cache.repositories.EmployeeRepository;
-import lombok.RequiredArgsConstructor;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
@@ -14,9 +15,11 @@ import java.util.concurrent.ConcurrentHashMap;
 
 @Component("IndividualEmployeeCache")
 @Slf4j
-@RequiredArgsConstructor
 public class IndividualEmployeeCache
-        implements CacheMemory, CacheHandler,FastRefreshCache {
+        implements CacheMemory, CacheHandler, FastRefreshCache {
+
+    private final Counter cacheHits;
+    private final Counter cacheMisses;
 
     private final EmployeeRepository employeeRepository;
 
@@ -30,6 +33,25 @@ public class IndividualEmployeeCache
     private final Long CACHE_REFRESH_TIME_MINUTES = 5L;
     private final Long CACHE_EVICT_TIME_MINUTES = 10L;
 
+
+    public IndividualEmployeeCache(
+            EmployeeRepository employeeRepository,
+            MeterRegistry meterRegistry) {
+
+        this.employeeRepository = employeeRepository;
+
+        this.cacheHits = Counter.builder("cache_hits_total")
+                .description("Total number of cache hits")
+                .tag("cache", "IndividualEmployeeCache")
+                .register(meterRegistry);
+
+        this.cacheMisses = Counter.builder("cache_misses_total")
+                .description("Total number of cache misses")
+                .tag("cache", "IndividualEmployeeCache")
+                .register(meterRegistry);
+    }
+
+
     /*
      * AOP calls this method on cache lookup
      */
@@ -41,21 +63,33 @@ public class IndividualEmployeeCache
         CacheDto<Employee> cache =
                 memory.get(employeeId);
 
+        // Cache miss - entry doesn't exist
         if (cache == null) {
+
+            cacheMisses.increment();
+
             return null;
         }
 
+        // Cache miss - entry expired
         if (!checkTTL(
                 cache.getAddedAt(),
                 CACHE_TTL)) {
 
             memory.remove(employeeId);
 
+            cacheMisses.increment();
+
             return null;
         }
 
+        // Cache hit
+        cacheHits.increment();
+
         // Update last-access time
-        cache.setAddedAt(LocalDateTime.now());
+        cache.setAddedAt(
+                LocalDateTime.now()
+        );
 
         return cache.getData();
     }
@@ -82,7 +116,10 @@ public class IndividualEmployeeCache
                 LocalDateTime.now()
         );
 
-        memory.put(employeeId, cacheDto);
+        memory.put(
+                employeeId,
+                cacheDto
+        );
     }
 
 
@@ -102,7 +139,9 @@ public class IndividualEmployeeCache
     @Override
     public void cleanUp() {
 
-        log.info("Cleaning IndividualEmployeeCache");
+        log.info(
+                "Cleaning IndividualEmployeeCache"
+        );
 
         LocalDateTime currentTime =
                 LocalDateTime.now();
@@ -162,10 +201,12 @@ public class IndividualEmployeeCache
                             .orElse(null);
 
             if (employee != null) {
+
                 cache.setData(employee);
             }
         }
 
-        lastUpdatedAt = LocalDateTime.now();
+        lastUpdatedAt =
+                LocalDateTime.now();
     }
 }
